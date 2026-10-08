@@ -3,7 +3,7 @@ core:
     debug: false
     debugReportCaller: false
     logDisableTimestamp: true
-    logsPath: ./logs
+    logsPath: ./logs/beelzebub.log #used when run from the CLI; docker-compose overrides this with BEELZEBUB_LOGGING_LOGS_PATH
   tracings:
     rabbit-mq:
       enabled: false

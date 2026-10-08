@@ -26,6 +26,22 @@ services:
       BEELZEBUB_CLOUD_ENABLED: ${BEELZEBUB_CLOUD_ENABLED:-false}
       BEELZEBUB_CLOUD_URI: ${BEELZEBUB_CLOUD_URI:-}
       BEELZEBUB_CLOUD_AUTH_TOKEN: ${BEELZEBUB_CLOUD_AUTH_TOKEN:-}
+      # Write the log into the mounted ./logs folder so the alerter can read it
+      BEELZEBUB_LOGGING_LOGS_PATH: /logs/beelzebub.log
     volumes:
       - "./configurations:/configurations"
       - "./state:/state"
+      - "./logs:/logs" #beelzebub.log lands in ./logs so the alerter can read it
+
+  #webhook alerter: starts with the honeypot and tails the same log file
+  alerter:
+    build: "./Beekeeper scripts/Slack bot"
+    container_name: beekeeper-alerter
+    restart: always
+    depends_on:
+      - beelzebub
+    volumes:
+      - "./logs:/logs:ro" #same log folder as beelzebub, read-only
+      - "./Beekeeper scripts/Slack bot/.env:/app/.env:ro" #webhook type + URL
+    environment:
+      LOG_FILE: /logs/beelzebub.log #overrides the host path in .env
