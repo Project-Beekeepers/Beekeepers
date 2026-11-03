@@ -5,6 +5,7 @@ import os
 import time
 from collections import defaultdict
 from datetime import datetime
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 import requests
@@ -217,6 +218,57 @@ def safe_alert_value(value, limit=500):
     return value
 
 
+# ATT&CK mappings are heuristic *possibilities*, not confirmed attack findings.
+# Names, IDs, and tactics follow https://attack.mitre.org/techniques/.
+_MITRE_HTTP_PROBE_PATHS = frozenset({
+    "/.env", "/.git/config", "/actuator/env", "/server-status",
+    "/phpmyadmin", "/wp-login.php",
+})
+
+
+def mitre_attack_candidate(details, count=1):
+    """Return (ID, name, tactic, signal), or None when evidence is insufficient.
+
+    The count comes from the existing per-IP/protocol alert window, not a
+    dedicated failed-authentication detector. Labels must remain tentative.
+    """
+    if not isinstance(details, dict):
+        return None
+    protocol = details.get("Protocol")
+    protocol = protocol.strip().upper() if isinstance(protocol, str) else ""
+    repeated = isinstance(count, int) and not isinstance(count, bool) and count >= 5
+
+    if protocol == "HTTP":
+        uri = details.get("RequestURI")
+        if not isinstance(uri, str):
+            return None
+        path = urlsplit(uri).path.casefold().rstrip("/") or "/"
+        if path in _MITRE_HTTP_PROBE_PATHS:
+            return ("T1595.002", "Vulnerability Scanning", "Reconnaissance",
+                    "request for a commonly probed endpoint")
+        if repeated:
+            return ("T1595", "Active Scanning", "Reconnaissance",
+                    "five or more HTTP requests in the alert window")
+
+    if protocol == "SSH":
+        if ssh_event_kind(details) == "command":
+            command = details.get("Command")
+            if isinstance(command, str) and re.match(
+                r"^\s*(?:(?:/usr)?/bin/)?(?:bash|sh|zsh|dash|ash)\b",
+                command, re.IGNORECASE,
+            ):
+                return ("T1059.004", "Unix Shell", "Execution",
+                        "SSH command explicitly invokes a Unix shell")
+        message = details.get("Msg")
+        if (isinstance(message, str)
+                and message.strip().casefold() == "new ssh login attempt"
+                and repeated):
+            return ("T1110", "Brute Force", "Credential Access",
+                    "repeated SSH activity including a login attempt")
+
+    return None
+
+
 def format_message(details, count, suppressed=0):
     b = "**" if WEBHOOK_TYPE == "discord" else "*"
     request = f"{details.get('HTTPMethod') or ''} {details.get('RequestURI') or details.get('Command') or ''}"
@@ -244,6 +296,15 @@ def format_message(details, count, suppressed=0):
         value = safe_alert_value(details.get(key), 150)
         if value.strip():
             lines.append(f"{b}{label}:{b} {value}")
+
+    mapping = mitre_attack_candidate(details, count)
+    if mapping is not None:
+        technique_id, technique_name, tactic, signal = mapping
+        lines.append(
+            f"{b}Possible MITRE ATT&CK:{b} {technique_id} - "
+            f"{technique_name} ({tactic})"
+        )
+        lines.append(f"{b}Indicator:{b} {signal}")
 
     lines.append(f"{b}Probes in last {PROBE_WINDOW_SECONDS}s:{b} {count}")
     lines.append(f"{b}Events suppressed by cooldown since last alert:{b} {suppressed}")
