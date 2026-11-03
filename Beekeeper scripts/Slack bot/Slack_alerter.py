@@ -39,9 +39,16 @@ PROBE_THRESHOLD = 1                     #number of probes to alert on, set to 1 
 PROBE_WINDOW_SECONDS = 60               #the given threshhold for probes
 COOLDOWN_SECONDS = 300
 
+# SSH commands use separate rules so a login alert cannot hide later commands.
+SSH_COMMANDS_PER_ALERT = 1
+SSH_COMMAND_COOLDOWN_SECONDS = 0
+ALERT_ON_SSH_SESSION_END = False
+SSH_SESSION_STATE_TTL_SECONDS = 3600
+
 #in-memory state
 last_alerted = {}
 request_times = defaultdict(list)
+ssh_command_state = {}
 
 
 #alert filter
@@ -63,6 +70,60 @@ def should_alert(ip, path):
 
     last_alerted[ip] = now
     return True
+
+def ssh_event_kind(details):
+    protocol = details.get("Protocol")
+    protocol = protocol.strip().upper() if isinstance(protocol, str) else ""
+    if protocol != "SSH":
+        return None
+
+    message = details.get("Msg")
+    message = message.strip().casefold() if isinstance(message, str) else ""
+    if message == "end ssh session":
+        return "end"
+    if message in ("ssh raw command", "ssh terminal session interaction"):
+        return "command"
+    return None
+
+
+def ssh_session_key(details):
+    ip = details.get("SourceIp")
+    session_id = details.get("ID")
+    if not isinstance(ip, str) or not ip.strip():
+        ip = "unknown"
+    if not isinstance(session_id, str) or not session_id.strip():
+        session_id = "unknown-session"
+    return (ip, session_id)
+
+
+def should_alert_ssh_command(details):
+    # Default settings alert for every SSH command, without storing session state.
+    if SSH_COMMANDS_PER_ALERT <= 1 and SSH_COMMAND_COOLDOWN_SECONDS <= 0:
+        return True, 1
+
+    now = time.time()
+    stale = [key for key, state in ssh_command_state.items()
+             if now - state["last_seen"] > SSH_SESSION_STATE_TTL_SECONDS]
+    for key in stale:
+        ssh_command_state.pop(key, None)
+
+    key = ssh_session_key(details)
+    state = ssh_command_state.setdefault(
+        key, {"pending": 0, "last_alerted": None, "last_seen": now}
+    )
+    state["last_seen"] = now
+    state["pending"] += 1
+    if state["pending"] < max(1, SSH_COMMANDS_PER_ALERT):
+        return False, state["pending"]
+    if (state["last_alerted"] is not None
+            and now - state["last_alerted"] < max(0, SSH_COMMAND_COOLDOWN_SECONDS)):
+        return False, state["pending"]
+
+    count = state["pending"]
+    state["pending"] = 0
+    state["last_alerted"] = now
+    return True, count
+
 
 #alert message
 def format_message(details, count):
@@ -111,6 +172,25 @@ def handle_line(line):
         return
 
     details = entry.get("event", {})
+    kind = ssh_event_kind(details)
+
+    if kind == "end":
+        # End events often lack SourceIp; their session ID is still available.
+        session_id = details.get("ID")
+        if isinstance(session_id, str) and session_id.strip():
+            for key in list(ssh_command_state):
+                if key[1] == session_id:
+                    ssh_command_state.pop(key, None)
+        if ALERT_ON_SSH_SESSION_END:
+            send_alert(format_message(details, 1))
+        return
+
+    if kind == "command":
+        allowed, count = should_alert_ssh_command(details)
+        if allowed:
+            send_alert(format_message(details, count))
+        return
+
     ip = details.get("SourceIp", "unknown")
     path = details.get("RequestURI", "")
 
