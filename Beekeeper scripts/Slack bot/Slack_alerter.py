@@ -7,6 +7,8 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import requests
+from queue import Full, Queue
+from threading import Lock, Thread
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -234,23 +236,108 @@ def format_message(details, count, suppressed=0):
     )
 
     return "\n".join(lines)
-#discord or slack output decider
-def send_alert(text):
-    #each service expects a different JSON key for the message
+# A bounded in-memory queue keeps the log reader responsive when webhooks are slow.
+WEBHOOK_QUEUE_MAXSIZE = 256
+WEBHOOK_MAX_ATTEMPTS = 3
+WEBHOOK_RETRY_MAX_SECONDS = 30
+webhook_queue = Queue(maxsize=WEBHOOK_QUEUE_MAXSIZE)
+webhook_worker_thread = None
+webhook_worker_lock = Lock()
+_WEBHOOK_STOP = object()
+
+
+def _retry_delay(attempt, response=None):
+    delay = min(WEBHOOK_RETRY_MAX_SECONDS, 2 ** (attempt - 1))
+    if response is not None and response.status_code == 429:
+        retry_after = response.headers.get("Retry-After")
+        try:
+            requested = float(retry_after)
+        except (TypeError, ValueError):
+            requested = 0
+        if 0 <= requested < float("inf"):
+            delay = min(WEBHOOK_RETRY_MAX_SECONDS, max(delay, requested))
+    return delay
+
+
+def _deliver_webhook(text):
     if WEBHOOK_TYPE == "discord":
-        payload = {"content": text[:2000]}  #discord rejects messages over 2000 chars
+        payload = {"content": text[:2000]}
     elif WEBHOOK_TYPE == "slack":
         payload = {"text": text}
     else:
         raise ValueError(f"Unknown WEBHOOK_TYPE: {WEBHOOK_TYPE}")
 
-    #catch network errors so one failed post doesn't kill the loop
+    for attempt in range(1, WEBHOOK_MAX_ATTEMPTS + 1):
+        response = None
+        try:
+            response = requests.post(WEBHOOK_URL, json=payload, timeout=10)
+        except requests.RequestException as exc:
+            if attempt == WEBHOOK_MAX_ATTEMPTS:
+                logging.error("Webhook delivery failed after %d attempts (%s)",
+                              attempt, type(exc).__name__)
+                return False
+        else:
+            if 200 <= response.status_code < 300:
+                return True
+            retryable = response.status_code in (408, 429) or response.status_code >= 500
+            if not retryable:
+                logging.error("Webhook rejected alert with HTTP %d", response.status_code)
+                return False
+            if attempt == WEBHOOK_MAX_ATTEMPTS:
+                logging.error("Webhook failed after %d attempts: HTTP %d",
+                              attempt, response.status_code)
+                return False
+
+        time.sleep(_retry_delay(attempt, response))
+    return False
+
+
+def _webhook_worker_loop():
+    while True:
+        item = webhook_queue.get()
+        try:
+            if item is _WEBHOOK_STOP:
+                return
+            try:
+                _deliver_webhook(item)
+            except Exception:
+                logging.exception("Unexpected webhook delivery failure")
+        finally:
+            webhook_queue.task_done()
+
+
+def _ensure_webhook_worker():
+    global webhook_worker_thread
+    with webhook_worker_lock:
+        if webhook_worker_thread is None or not webhook_worker_thread.is_alive():
+            webhook_worker_thread = Thread(
+                target=_webhook_worker_loop, name="honeypot-webhook", daemon=True
+            )
+            webhook_worker_thread.start()
+
+
+def send_alert(text):
+    # This function enqueues; it does not confirm remote delivery.
+    if WEBHOOK_TYPE not in ("discord", "slack"):
+        raise ValueError(f"Unknown WEBHOOK_TYPE: {WEBHOOK_TYPE}")
     try:
-        r = requests.post(WEBHOOK_URL, json=payload, timeout=10)
-        if r.status_code >= 300:
-            print(f"Webhook returned {r.status_code}: {r.text}")
-    except requests.RequestException as e:
-        print(f"Failed to send alert: {e}")
+        webhook_queue.put_nowait(text)
+    except Full:
+        logging.error("Webhook queue full; dropping an alert (capacity=%d)",
+                      webhook_queue.maxsize)
+        return False
+    _ensure_webhook_worker()
+    return True
+
+
+def stop_webhook_worker():
+    # Gracefully drain queued alerts on normal exit / Ctrl+C.
+    worker = webhook_worker_thread
+    if worker is None or not worker.is_alive():
+        return
+    webhook_queue.join()
+    webhook_queue.put(_WEBHOOK_STOP)
+    worker.join()
 
 
 #grabs code from the log output
@@ -310,8 +397,11 @@ def handle_line(line):
         count = len(request_times[key])
         suppressed = cooldown_suppressed.pop(key, 0)
 
-        send_alert(format_message(details, count, suppressed))
-        print(f"Alert sent for {ip} ({count} probes)")
+        queued = send_alert(format_message(details, count, suppressed))
+        if queued is False:
+            print(f"Alert dropped for {ip} ({count} probes)")
+        else:
+            print(f"Alert queued for {ip} ({count} probes)")
     else:
         print(f"Suppressed event from {ip} ({path})")
 
@@ -346,4 +436,7 @@ def follow_log():
 
 
 if __name__ == "__main__":
-    follow_log()
+    try:
+        follow_log()
+    finally:
+        stop_webhook_worker()
