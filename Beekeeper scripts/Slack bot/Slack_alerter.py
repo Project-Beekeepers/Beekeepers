@@ -2,6 +2,8 @@ import json
 import os
 import time
 from collections import defaultdict
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -64,13 +66,31 @@ def should_alert(ip, path):
     last_alerted[ip] = now
     return True
 
+#Convert UTC timestamps for display without changing the original log.
+def format_nz_timestamp(value):
+    if not isinstance(value, str) or not value.strip():
+        return "Unknown"
+
+    try:
+        event_time = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return value
+
+    if event_time.tzinfo is None:
+        return value  #The source timezone is unknown; do not guess.
+
+    return event_time.astimezone(ZoneInfo("Pacific/Auckland")).strftime(
+        "%d %b %Y %H:%M:%S %Z"
+    )
+
+
 #alert message
 def format_message(details, count):
     #discord bolds with **text**, slack bolds with *text*
     b = "**" if WEBHOOK_TYPE == "discord" else "*"
     return (
         f"Active probing found\n"
-        f"{b}Time:{b} {details.get('DateTime')}\n"
+        f"{b}Time (NZ):{b} {format_nz_timestamp(details.get('DateTime'))}\n"
         f"{b}Protocol:{b} {details.get('Protocol')}\n"
         f"{b}Source IP:{b} {details.get('SourceIp')}\n"
         f"{b}Request:{b} {details.get('HTTPMethod', '')} {details.get('RequestURI') or details.get('Command', '')}\n"
