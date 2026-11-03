@@ -1,4 +1,4 @@
-"""Tests for PR #6: reporting events suppressed by the ordinary alert cooldown."""
+﻿"""Tests for PR #6: reporting events suppressed by the ordinary alert cooldown."""
 
 import importlib.util
 import json
@@ -106,13 +106,13 @@ class SuppressedEventCountTests(unittest.TestCase):
         self.alerter.handle_line(self.event())
         self.assertEqual(len(self.sent_messages()), 1)
         self.alerter.handle_line(self.event())
-        self.assertEqual(self.alerter.cooldown_suppressed["192.0.2.10"], 1)
+        self.assertEqual(self.alerter.cooldown_suppressed[("192.0.2.10", "HTTP")], 1)
 
     def test_cooldown_boundary_allows_next_alert(self):
         self.assertTrue(self.alerter.should_alert("192.0.2.10", "/"))
         self.now[0] += 299.999
         self.assertFalse(self.alerter.should_alert("192.0.2.10", "/"))
-        self.assertEqual(self.alerter.cooldown_suppressed["192.0.2.10"], 1)
+        self.assertEqual(self.alerter.cooldown_suppressed[("192.0.2.10", "UNKNOWN")], 1)
         self.now[0] += 0.001
         self.assertTrue(self.alerter.should_alert("192.0.2.10", "/"))
 
@@ -157,7 +157,7 @@ class SuppressedEventCountTests(unittest.TestCase):
     def test_uses_existing_webhook_transport(self):
         self.alerter.handle_line(self.event())
         self.send.assert_called_once()
-        self.assertIn("Active probing found", self.send.call_args.args[0])
+        self.assertIn("New HTTP request", self.send.call_args.args[0])
 
 
 if __name__ == "__main__":
