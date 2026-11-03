@@ -52,7 +52,7 @@ SSH_SESSION_STATE_TTL_SECONDS = 3600
 last_alerted = {}
 request_times = defaultdict(list)
 ssh_command_state = {}
-
+cooldown_suppressed = defaultdict(int)
 
 #alert filter
 def alert_key(ip, protocol=None):
@@ -76,10 +76,12 @@ def should_alert(ip, path, protocol=None):
         return False #too few requests yet to call this active probing
 
     if key in last_alerted and now - last_alerted[key] < COOLDOWN_SECONDS:
+        cooldown_suppressed[key] += 1
         return False #already alerted for this IP and protocol recently
 
     last_alerted[key] = now
     return True
+
 
 #Convert UTC timestamps for display without changing the original log.
 def format_nz_timestamp(value):
@@ -180,7 +182,7 @@ def alert_title(details):
     return "New honeypot activity detected"
 
 
-def format_message(details, count):
+def format_message(details, count, suppressed=0):
     #discord bolds with **text**, slack bolds with *text*
     b = "**" if WEBHOOK_TYPE == "discord" else "*"
     return (
@@ -191,7 +193,8 @@ def format_message(details, count):
         f"{b}Request:{b} {details.get('HTTPMethod', '')} {details.get('RequestURI') or details.get('Command', '')}\n"
         f"{b}Service:{b} {details.get('Description', '')}\n"
         f"{b}Response given:{b} {details.get('CommandOutput', '')[:500]}\n" #cut long LLM replies short
-        f"{b}Probes in last {PROBE_WINDOW_SECONDS}s:{b} {count}"
+        f"{b}Probes in last {PROBE_WINDOW_SECONDS}s:{b} {count}\n"
+        f"{b}Events suppressed by cooldown since last alert:{b} {suppressed}"
     )
 
 
@@ -267,11 +270,16 @@ def handle_line(line):
     protocol = details.get("Protocol")
 
     if should_alert(ip, path, protocol):
-        count = len(request_times[alert_key(ip, protocol)])
-        send_alert(format_message(details, count))
+        key = alert_key(ip, protocol)
+        count = len(request_times[key])
+        suppressed = cooldown_suppressed.pop(key, 0)
+
+        send_alert(format_message(details, count, suppressed))
         print(f"Alert sent for {ip} ({count} probes)")
     else:
         print(f"Suppressed event from {ip} ({path})")
+
+
 #long running loop: follow the log file like `tail -f`
 #
 #!!! IMPORTANT - TODO: FIX LATER !!!
