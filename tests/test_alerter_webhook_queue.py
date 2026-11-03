@@ -47,7 +47,7 @@ class WebhookQueueTests(unittest.TestCase):
                     m.stop_webhook_worker()
                     post.assert_called_once_with(
                         "https://example.invalid/testing",
-                        json={"content": "hello"}, timeout=10
+                        json={"content": "hello", "allowed_mentions": {"parse": []}}, timeout=10
                     )
 
     def test_http_429_retry_after_then_success(self):

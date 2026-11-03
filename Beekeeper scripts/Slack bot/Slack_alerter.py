@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import os
 import time
 from collections import defaultdict
@@ -184,21 +185,49 @@ def alert_title(details):
     return "New honeypot activity detected"
 
 
+# These redactions protect common credential patterns in displayed values.
+# They do not alter the underlying event logs or replace upstream log redaction.
+_SECRET_ASSIGNMENT = re.compile(
+    r"(?i)\b(password|passwd|pwd|api[_-]?key|access[_-]?token|"
+    r"refresh[_-]?token|client[_-]?secret|token|secret|authorization)"
+    r"(\s*[=:]\s*)(?:Bearer\s+)?(?:\"[^\"]*\"|'[^']*'|[^\s&;,]+)"
+)
+
+
+def safe_alert_value(value, limit=500):
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list)):
+        value = json.dumps(value, ensure_ascii=False, default=str)
+    else:
+        value = str(value)
+
+    value = _SECRET_ASSIGNMENT.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]", value
+    )
+    value = value[:limit]
+    value = value.replace("\r", "\\r").replace("\n", "\\n").replace("\t", "\\t")
+    value = "".join(
+        char if ord(char) >= 32 and ord(char) != 127 and char not in ("\u2028", "\u2029")
+        else "?" for char in value
+    )
+    # Slack uses <...> for mentions; Discord interprets @ mentions.
+    value = value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    value = value.replace("@", "@\u200b")
+    return value
+
+
 def format_message(details, count, suppressed=0):
     b = "**" if WEBHOOK_TYPE == "discord" else "*"
-
-    output = details.get("CommandOutput") or ""
-    if not isinstance(output, str):
-        output = str(output)
-
+    request = f"{details.get('HTTPMethod') or ''} {details.get('RequestURI') or details.get('Command') or ''}"
     lines = [
-        f"{alert_title(details)}",
-        f"{b}Time (NZ):{b} {format_nz_timestamp(details.get('DateTime'))}",
-        f"{b}Protocol:{b} {details.get('Protocol')}",
-        f"{b}Source IP:{b} {details.get('SourceIp')}",
-        f"{b}Request:{b} {details.get('HTTPMethod', '')} {details.get('RequestURI') or details.get('Command', '')}",
-        f"{b}Service:{b} {details.get('Description', '')}",
-        f"{b}Response given:{b} {output[:500]}",
+        alert_title(details),
+        f"{b}Time (NZ):{b} {safe_alert_value(format_nz_timestamp(details.get('DateTime')), 80)}",
+        f"{b}Protocol:{b} {safe_alert_value(details.get('Protocol'), 80)}",
+        f"{b}Source IP:{b} {safe_alert_value(details.get('SourceIp'), 100)}",
+        f"{b}Request:{b} {safe_alert_value(request, 500)}",
+        f"{b}Service:{b} {safe_alert_value(details.get('Description'), 200)}",
+        f"{b}Response given:{b} {safe_alert_value(details.get('CommandOutput'), 500)}",
     ]
 
     extra_fields = [
@@ -211,30 +240,13 @@ def format_message(details, count, suppressed=0):
         ("TLS Server Name", "TLSServerName"),
         ("Handler", "Handler"),
     ]
-
     for label, key in extra_fields:
-        value = details.get(key)
-
-        if value is None or value == "":
-            continue
-
-        if isinstance(value, (dict, list)):
-            value = json.dumps(value, ensure_ascii=False, default=str)
-        else:
-            value = str(value)
-
-        value = value.replace("\r", "\\r").replace("\n", "\\n")
-
+        value = safe_alert_value(details.get(key), 150)
         if value.strip():
-            lines.append(f"{b}{label}:{b} {value[:150]}")
+            lines.append(f"{b}{label}:{b} {value}")
 
-    lines.append(
-        f"{b}Probes in last {PROBE_WINDOW_SECONDS}s:{b} {count}"
-    )
-    lines.append(
-        f"{b}Events suppressed by cooldown since last alert:{b} {suppressed}"
-    )
-
+    lines.append(f"{b}Probes in last {PROBE_WINDOW_SECONDS}s:{b} {count}")
+    lines.append(f"{b}Events suppressed by cooldown since last alert:{b} {suppressed}")
     return "\n".join(lines)
 # A bounded in-memory queue keeps the log reader responsive when webhooks are slow.
 WEBHOOK_QUEUE_MAXSIZE = 256
@@ -261,7 +273,7 @@ def _retry_delay(attempt, response=None):
 
 def _deliver_webhook(text):
     if WEBHOOK_TYPE == "discord":
-        payload = {"content": text[:2000]}
+        payload = {"content": text[:2000], "allowed_mentions": {"parse": []}}
     elif WEBHOOK_TYPE == "slack":
         payload = {"text": text}
     else:

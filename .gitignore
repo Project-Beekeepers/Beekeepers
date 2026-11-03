@@ -6,7 +6,7 @@ logs
 coverage*.out
 integration_test/certs/tls.crt
 integration_test/certs/tls.key
-#.env
+.env
 .codex
 .local
 .opencode/
