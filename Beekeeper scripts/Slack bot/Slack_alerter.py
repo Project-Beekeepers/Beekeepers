@@ -183,21 +183,57 @@ def alert_title(details):
 
 
 def format_message(details, count, suppressed=0):
-    #discord bolds with **text**, slack bolds with *text*
     b = "**" if WEBHOOK_TYPE == "discord" else "*"
-    return (
-        f"{alert_title(details)}\n"
-        f"{b}Time (NZ):{b} {format_nz_timestamp(details.get('DateTime'))}\n"
-        f"{b}Protocol:{b} {details.get('Protocol')}\n"
-        f"{b}Source IP:{b} {details.get('SourceIp')}\n"
-        f"{b}Request:{b} {details.get('HTTPMethod', '')} {details.get('RequestURI') or details.get('Command', '')}\n"
-        f"{b}Service:{b} {details.get('Description', '')}\n"
-        f"{b}Response given:{b} {details.get('CommandOutput', '')[:500]}\n" #cut long LLM replies short
-        f"{b}Probes in last {PROBE_WINDOW_SECONDS}s:{b} {count}\n"
+
+    output = details.get("CommandOutput") or ""
+    if not isinstance(output, str):
+        output = str(output)
+
+    lines = [
+        f"{alert_title(details)}",
+        f"{b}Time (NZ):{b} {format_nz_timestamp(details.get('DateTime'))}",
+        f"{b}Protocol:{b} {details.get('Protocol')}",
+        f"{b}Source IP:{b} {details.get('SourceIp')}",
+        f"{b}Request:{b} {details.get('HTTPMethod', '')} {details.get('RequestURI') or details.get('Command', '')}",
+        f"{b}Service:{b} {details.get('Description', '')}",
+        f"{b}Response given:{b} {output[:500]}",
+    ]
+
+    extra_fields = [
+        ("Source Port", "SourcePort"),
+        ("User Agent", "UserAgent"),
+        ("Status", "Status"),
+        ("Session ID", "ID"),
+        ("Client", "Client"),
+        ("HTTP Host", "HostHTTPRequest"),
+        ("TLS Server Name", "TLSServerName"),
+        ("Handler", "Handler"),
+    ]
+
+    for label, key in extra_fields:
+        value = details.get(key)
+
+        if value is None or value == "":
+            continue
+
+        if isinstance(value, (dict, list)):
+            value = json.dumps(value, ensure_ascii=False, default=str)
+        else:
+            value = str(value)
+
+        value = value.replace("\r", "\\r").replace("\n", "\\n")
+
+        if value.strip():
+            lines.append(f"{b}{label}:{b} {value[:150]}")
+
+    lines.append(
+        f"{b}Probes in last {PROBE_WINDOW_SECONDS}s:{b} {count}"
+    )
+    lines.append(
         f"{b}Events suppressed by cooldown since last alert:{b} {suppressed}"
     )
 
-
+    return "\n".join(lines)
 #discord or slack output decider
 def send_alert(text):
     #each service expects a different JSON key for the message
