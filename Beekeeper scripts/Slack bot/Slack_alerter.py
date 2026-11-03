@@ -30,8 +30,8 @@ LOG_FILE = os.path.join(SCRIPT_DIR, os.environ.get("LOG_FILE", "../../logs/beelz
 #!!! IMPORTANT - WINDOWS / DOCKER DESKTOP IP PROBLEM !!!
 #on windows, docker desktop hides the attacker's real IP: every event shows the docker
 #gateway (e.g. 172.17.0.1 or 192.168.65.x) as the SourceIp instead.
-#because the cooldown below is per IP, all attackers get merged into one "IP", so after
-#the first alert everything else is suppressed for COOLDOWN_SECONDS.
+#the cooldown below groups by (IP, protocol), so attackers using the same protocol
+#can still share one cooldown when Docker Desktop reports the same gateway IP.
 #  - workaround for local testing on windows: set COOLDOWN_SECONDS = 0
 #  - real fix: run the docker stack on a linux host/VM, where real IPs come through
 #    (no code changes needed, set COOLDOWN_SECONDS back to 300 there)
@@ -48,23 +48,30 @@ request_times = defaultdict(list)
 
 
 #alert filter
-def should_alert(ip, path):
+def alert_key(ip, protocol=None):
+    name = protocol.strip().upper() if isinstance(protocol, str) else ""
+    return (ip, name or "UNKNOWN")
+
+
+def should_alert(ip, path, protocol=None):
     now = time.time()
 
     if path in IGNORE_PATHS:
         return False
 
-    #record this request, then drop anything outside the window
-    request_times[ip].append(now)
-    request_times[ip] = [t for t in request_times[ip] if now - t <= PROBE_WINDOW_SECONDS]
+    key = alert_key(ip, protocol)
 
-    if len(request_times[ip]) < PROBE_THRESHOLD:
+    #record this request, then drop anything outside the window
+    request_times[key].append(now)
+    request_times[key] = [t for t in request_times[key] if now - t <= PROBE_WINDOW_SECONDS]
+
+    if len(request_times[key]) < PROBE_THRESHOLD:
         return False #too few requests yet to call this active probing
 
-    if ip in last_alerted and now - last_alerted[ip] < COOLDOWN_SECONDS:
-        return False #already alerted on this IP recently
+    if key in last_alerted and now - last_alerted[key] < COOLDOWN_SECONDS:
+        return False #already alerted for this IP and protocol recently
 
-    last_alerted[ip] = now
+    last_alerted[key] = now
     return True
 
 #Convert UTC timestamps for display without changing the original log.
@@ -143,9 +150,10 @@ def handle_line(line):
 
     ip = details.get("SourceIp", "unknown")
     path = details.get("RequestURI", "")
+    protocol = details.get("Protocol")
 
-    if should_alert(ip, path):
-        count = len(request_times[ip])
+    if should_alert(ip, path, protocol):
+        count = len(request_times[alert_key(ip, protocol)])
         send_alert(format_message(details, count))
         print(f"Alert sent for {ip} ({count} probes)")
     else:
