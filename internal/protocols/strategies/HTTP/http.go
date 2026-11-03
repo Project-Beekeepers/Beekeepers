@@ -81,6 +81,8 @@ func newHTTPHandler(servConf parser.BeelzebubServiceConfiguration, tr tracer.Tra
 					resp.StatusCode = 500
 					resp.Body = "500 Internal Server Error"
 				}
+			} else {
+				traceRequest(request, tr, parser.Command{}, servConf.Description, "", servConf.TrustedProxiesNets, resp.Body)
 			}
 		}
 		setResponseHeaders(responseWriter, resp.Headers, resp.StatusCode)
