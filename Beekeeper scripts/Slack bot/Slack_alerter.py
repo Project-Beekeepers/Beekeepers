@@ -65,11 +65,37 @@ def should_alert(ip, path):
     return True
 
 #alert message
+def alert_title(details):
+    protocol = details.get("Protocol")
+    protocol = protocol.strip().upper() if isinstance(protocol, str) else ""
+    event_message = details.get("Msg")
+    event_message = event_message.strip().casefold() if isinstance(event_message, str) else ""
+
+    if protocol == "SSH":
+        if event_message == "new ssh login attempt":
+            return "New SSH login attempt"
+        if event_message in ("ssh raw command", "ssh terminal session interaction"):
+            return "SSH command received"
+        if event_message == "new ssh terminal session":
+            return "New SSH terminal session"
+        if event_message == "end ssh session":
+            return "SSH session ended"
+        if not event_message and isinstance(details.get("Command"), str) and details["Command"].strip():
+            return "SSH command received"
+        return "New SSH activity detected"
+
+    if protocol == "HTTP":
+        return "New HTTP request"
+    if protocol in ("TCP", "TELNET", "MCP"):
+        return f"New {protocol} activity detected"
+    return "New honeypot activity detected"
+
+
 def format_message(details, count):
     #discord bolds with **text**, slack bolds with *text*
     b = "**" if WEBHOOK_TYPE == "discord" else "*"
     return (
-        f"Active probing found\n"
+        f"{alert_title(details)}\n"
         f"{b}Time:{b} {details.get('DateTime')}\n"
         f"{b}Protocol:{b} {details.get('Protocol')}\n"
         f"{b}Source IP:{b} {details.get('SourceIp')}\n"
