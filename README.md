@@ -84,6 +84,37 @@ docker compose down
 
 For a single-service setup or another deployment method, follow the [installation guide](https://docs.beelzebub.ai/getting-started/installation).
 
+## Beekeepers Honeypot Alerting Integration
+
+The Beekeepers integration improves SSH and HTTP honeypot monitoring, event processing, and Discord/Slack alert delivery.
+
+### How it works
+
+Honeypot interactions are recorded by Beelzebub in `logs/beelzebub.log`. A Python alerter monitors these events, validates their structure, applies protocol-specific cooldowns and filtering, and sends formatted security notifications through a webhook queue and background worker.
+
+### Features
+
+- New Zealand local timestamps (NZST/NZDT).
+- Descriptive SSH and HTTP alert titles.
+- Independent SSH command notifications and configurable session-end filtering.
+- Protocol-specific cooldowns and suppressed-event counts.
+- HTTP response tracing and unmatched-route event handling.
+- Additional alert metadata, including source port, user agent and session ID.
+- MITRE ATT&CK technique suggestions based on selected event indicators.
+- Improved error handling, webhook retries and protection against unsafe attacker-controlled text.
+
+### Key components
+
+- `Beekeeper scripts/Slack bot/Slack_alerter.py` — event validation, alert filtering, formatting and webhook delivery.
+- `internal/protocols/strategies/HTTP/http.go` — HTTP request handling and event tracing.
+- `configurations/services/` — honeypot service configurations and listening ports.
+- `docker-compose.yml` — container configuration and shared log volumes.
+- `tests/` — Python alerting regression tests.
+
+### Limitations
+
+The webhook queue is in memory and does not guarantee delivery after process failures. Log rotation, deployment-specific configurations, and integration with additional static routes require further verification before production use.
+
 ## Beelzebub Platform
 
 The open-source framework is the foundation: deploy, operate, and extend it independently. **Beelzebub Platform** is the managed product for teams that need to coordinate deception across environments and connect runtime evidence to a broader security workflow.
