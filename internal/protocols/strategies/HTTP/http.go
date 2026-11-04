@@ -69,7 +69,7 @@ func newHTTPHandler(servConf parser.BeelzebubServiceConfiguration, tr tracer.Tra
 			resp.StatusCode = http.StatusMethodNotAllowed
 			resp.Headers = []string{"Allow:" + strings.Join(allowedMethods, ", ")}
 			resp.Body = http.StatusText(http.StatusMethodNotAllowed)
-			traceRequest(request, tr, parser.Command{}, servConf.Description, "", servConf.TrustedProxiesNets)
+			traceRequest(request, tr, parser.Command{}, servConf.Description, "", servConf.TrustedProxiesNets, resp.Body)
 		} else {
 			// If none of the main commands matched, and we have a fallback command configured, process it here.
 			// The regexp is ignored for fallback commands, as they are catch-all for any request.
@@ -81,6 +81,8 @@ func newHTTPHandler(servConf parser.BeelzebubServiceConfiguration, tr tracer.Tra
 					resp.StatusCode = 500
 					resp.Body = "500 Internal Server Error"
 				}
+			} else {
+				traceRequest(request, tr, parser.Command{}, servConf.Description, "", servConf.TrustedProxiesNets, resp.Body)
 			}
 		}
 		setResponseHeaders(responseWriter, resp.Headers, resp.StatusCode)
@@ -107,8 +109,8 @@ func matchHTTPCommand(commands []parser.Command, request *http.Request) (*parser
 	return nil, allowedMethods
 }
 
-func buildHTTPResponse(servConf parser.BeelzebubServiceConfiguration, tr tracer.Tracer, command parser.Command, request *http.Request) (httpResponse, error) {
-	resp := httpResponse{
+func buildHTTPResponse(servConf parser.BeelzebubServiceConfiguration, tr tracer.Tracer, command parser.Command, request *http.Request) (resp httpResponse, responseErr error) {
+	resp = httpResponse{
 		Body:       command.Handler,
 		Headers:    command.Headers,
 		StatusCode: command.StatusCode,
@@ -120,7 +122,15 @@ func buildHTTPResponse(servConf parser.BeelzebubServiceConfiguration, tr tracer.
 	if err == nil {
 		body = string(bodyBytes)
 	}
-	traceRequest(request, tr, command, servConf.Description, body, servConf.TrustedProxiesNets)
+	// Trace after the response is built so CommandOutput matches the actual reply.
+	// The handler replaces plugin failures with a 500 error response.
+	defer func() {
+		responseText := resp.Body
+		if responseErr != nil {
+			responseText = "500 Internal Server Error"
+		}
+		traceRequest(request, tr, command, servConf.Description, body, servConf.TrustedProxiesNets, responseText)
+	}()
 
 	if command.Plugin != "" {
 		host, _ := realClientAddr(request, servConf.TrustedProxiesNets)
@@ -171,7 +181,7 @@ func buildHTTPResponse(servConf parser.BeelzebubServiceConfiguration, tr tracer.
 	return resp, nil
 }
 
-func traceRequest(request *http.Request, tr tracer.Tracer, command parser.Command, HoneypotDescription, body string, trustedProxies []*net.IPNet) {
+func traceRequest(request *http.Request, tr tracer.Tracer, command parser.Command, HoneypotDescription, body string, trustedProxies []*net.IPNet, responseBody ...string) {
 	host, port := realClientAddr(request, trustedProxies)
 
 	remoteAddr := host
@@ -196,6 +206,15 @@ func traceRequest(request *http.Request, tr tracer.Tracer, command parser.Comman
 		ID:              uuid.New().String(),
 		Description:     HoneypotDescription,
 		Handler:         command.Name,
+	}
+	if len(responseBody) > 0 {
+		// The Slack/Discord alerter displays at most 500 characters.
+		// Limit the log field as well, without splitting a UTF-8 character.
+		output := []rune(responseBody[0])
+		if len(output) > 500 {
+			output = output[:500]
+		}
+		event.CommandOutput = string(output)
 	}
 	// Capture the TLS details from the request, if provided.
 	if request.TLS != nil {

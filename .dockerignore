@@ -1,0 +1,12 @@
+.git
+**/.git
+.env
+**/.env
+.env.*
+**/.env.*
+logs
+state
+pr*-package
+**/*.bak
+**/__pycache__
+**/*.pyc
