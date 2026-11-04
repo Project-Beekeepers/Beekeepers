@@ -73,8 +73,8 @@ class AlerterNZTimestampTests(unittest.TestCase):
             },
             1,
         )
-        self.assertIn("Time (NZ):** 03 Nov 2026 19:15:03 NZDT", result)
-        self.assertIn("Source IP:** 192.0.2.10", result)
+        self.assertIn("Time (NZ):**\n```\n03 Nov 2026 19:15:03 NZDT\n```", result)
+        self.assertIn("Source IP:**\n```\n192.0.2.10\n```", result)
 
 
 if __name__ == "__main__":

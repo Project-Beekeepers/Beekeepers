@@ -269,18 +269,31 @@ def mitre_attack_candidate(details, count=1):
     return None
 
 
+def _append_untrusted_field(lines, bold, label, value, limit=500, optional=False):
+    """Render untrusted event data as a fenced code block on Discord/Slack.
+
+    Every ASCII backtick is replaced with a lookalike so user input cannot
+    close the fence and inject new Markdown outside the block.
+    """
+    safe = safe_alert_value(value, limit).replace("`", "\u02cb")
+    if optional and not safe.strip():
+        return
+    lines.extend((f"{bold}{label}:{bold}", "```", safe or "(not provided)", "```"))
+
+
 def format_message(details, count, suppressed=0):
     b = "**" if WEBHOOK_TYPE == "discord" else "*"
     request = f"{details.get('HTTPMethod') or ''} {details.get('RequestURI') or details.get('Command') or ''}"
-    lines = [
-        alert_title(details),
-        f"{b}Time (NZ):{b} {safe_alert_value(format_nz_timestamp(details.get('DateTime')), 80)}",
-        f"{b}Protocol:{b} {safe_alert_value(details.get('Protocol'), 80)}",
-        f"{b}Source IP:{b} {safe_alert_value(details.get('SourceIp'), 100)}",
-        f"{b}Request:{b} {safe_alert_value(request, 500)}",
-        f"{b}Service:{b} {safe_alert_value(details.get('Description'), 200)}",
-        f"{b}Response given:{b} {safe_alert_value(details.get('CommandOutput'), 500)}",
-    ]
+    lines = [alert_title(details)]
+    for label, value, limit in (
+        ("Time (NZ)", format_nz_timestamp(details.get('DateTime')), 80),
+        ("Protocol", details.get('Protocol'), 80),
+        ("Source IP", details.get('SourceIp'), 100),
+        ("Request", request, 500),
+        ("Service", details.get('Description'), 200),
+        ("Response given", details.get('CommandOutput'), 500),
+    ):
+        _append_untrusted_field(lines, b, label, value, limit)
 
     extra_fields = [
         ("Source Port", "SourcePort"),
@@ -293,9 +306,7 @@ def format_message(details, count, suppressed=0):
         ("Handler", "Handler"),
     ]
     for label, key in extra_fields:
-        value = safe_alert_value(details.get(key), 150)
-        if value.strip():
-            lines.append(f"{b}{label}:{b} {value}")
+        _append_untrusted_field(lines, b, label, details.get(key), 150, optional=True)
 
     mapping = mitre_attack_candidate(details, count)
     if mapping is not None:
@@ -309,6 +320,47 @@ def format_message(details, count, suppressed=0):
     lines.append(f"{b}Probes in last {PROBE_WINDOW_SECONDS}s:{b} {count}")
     lines.append(f"{b}Events suppressed by cooldown since last alert:{b} {suppressed}")
     return "\n".join(lines)
+
+
+def _discord_content(text):
+    """Apply Discord's limit without leaving an unclosed generated fence.
+
+    Keep complete lines when clipping a formatted alert. The closing fence is
+    inserted when the cut falls inside a code block; arbitrary non-fenced
+    callers retain the previous 2000-character truncation behaviour.
+    """
+    max_length = 2000
+    if len(text) <= max_length:
+        return text
+    if "\n```\n" not in text:
+        return text[:max_length]
+
+    suffix = "\n[alert truncated]"
+    budget = max_length - len(suffix)
+    selected = []
+    length = 0
+    in_block = False
+    for line in text.splitlines(keepends=True):
+        toggles = line.strip() == "```"
+        still_open = in_block != toggles
+        reserve = len("```\n") if still_open else 0
+        if length + len(line) + reserve > budget:
+            break
+        selected.append(line)
+        length += len(line)
+        in_block = still_open
+    if in_block:
+        if selected and selected[-1].strip() == "```":
+            # The last fence opened a field whose value would not fit.
+            # Remove that empty field (including its label) entirely.
+            selected.pop()
+            if selected:
+                selected.pop()
+        else:
+            selected.append("```\n")
+    return "".join(selected).rstrip("\n") + suffix
+
+
 # A bounded in-memory queue keeps the log reader responsive when webhooks are slow.
 WEBHOOK_QUEUE_MAXSIZE = 256
 WEBHOOK_MAX_ATTEMPTS = 3
@@ -334,7 +386,7 @@ def _retry_delay(attempt, response=None):
 
 def _deliver_webhook(text):
     if WEBHOOK_TYPE == "discord":
-        payload = {"content": text[:2000], "allowed_mentions": {"parse": []}}
+        payload = {"content": _discord_content(text), "allowed_mentions": {"parse": []}}
     elif WEBHOOK_TYPE == "slack":
         payload = {"text": text}
     else:

@@ -107,7 +107,7 @@ class AlerterEventTitleTests(unittest.TestCase):
         }
         message = self.alerter.format_message(details, 1)
         self.assertTrue(message.startswith("New SSH login attempt\n"))
-        self.assertIn("Source IP:** 192.0.2.10", message)
+        self.assertIn("Source IP:**\n```\n192.0.2.10\n```", message)
         self.assertNotIn("Active probing found", message)
 
     def test_handle_line_sends_title_without_network_calls(self):

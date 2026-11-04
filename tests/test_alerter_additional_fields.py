@@ -37,10 +37,10 @@ class AdditionalFieldsTests(unittest.TestCase):
 
         message = self.alerter.format_message(details, 3, 2)
 
-        self.assertIn("Source Port:** 54321", message)
-        self.assertIn("User Agent:** curl/8.5.0", message)
-        self.assertIn("Status:** 401", message)
-        self.assertIn("Session ID:** session-123", message)
+        self.assertIn("Source Port:**\n```\n54321\n```", message)
+        self.assertIn("User Agent:**\n```\ncurl/8.5.0\n```", message)
+        self.assertIn("Status:**\n```\n401\n```", message)
+        self.assertIn("Session ID:**\n```\nsession-123\n```", message)
         self.assertIn("last alert:** 2", message)
 
     def test_missing_fields_are_hidden(self):

@@ -104,8 +104,8 @@ class AlerterProtocolCooldownTests(unittest.TestCase):
             self.alerter.handle_line(self.event("HTTP"))
             self.alerter.handle_line(self.event("SSH"))
         self.assertEqual(send.call_count, 2)
-        self.assertIn("Protocol:** SSH", send.call_args_list[0].args[0])
-        self.assertIn("Protocol:** HTTP", send.call_args_list[1].args[0])
+        self.assertIn("Protocol:**\n```\nSSH\n```", send.call_args_list[0].args[0])
+        self.assertIn("Protocol:**\n```\nHTTP\n```", send.call_args_list[1].args[0])
 
     def test_handle_line_probe_count_uses_correct_protocol(self):
         self.alerter.PROBE_THRESHOLD = 2
