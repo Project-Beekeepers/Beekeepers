@@ -1,0 +1,23 @@
+#Linux-only additions for local testing. Compose loads this file automatically.
+services:
+  beelzebub:
+    depends_on:
+      - ollama
+
+  ollama:
+    image: ollama/ollama
+    container_name: ollama
+    restart: always
+    #no "ports:" on purpose: only the other containers can reach Ollama
+    networks:
+      default:
+        aliases:
+          - host.docker.internal  #so the existing configs find Ollama without edits
+    volumes:
+      - ollama:/root/.ollama      #downloaded models survive restarts
+    environment:
+      OLLAMA_KEEP_ALIVE: "-1"     #keep the model loaded, no reload delay
+    #no GPU block: this machine is CPU-only (the NVIDIA "deploy:" section was left out)
+
+volumes:
+  ollama:

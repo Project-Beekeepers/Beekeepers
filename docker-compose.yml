@@ -14,7 +14,7 @@ services:
       - "8080:8080"
       - "8081:8081"
       - "80:80"
-      - "3306:3306"
+      - "3307:3306" #host 3306 is taken by local MySQL
       - "2112:2112" #Prometheus Open Metrics
     env_file:
       - path: .env
